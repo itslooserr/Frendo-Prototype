@@ -1,10 +1,7 @@
-
-# Run and deploy your AI Studio app
+Made by @slooserr [Instagram]
+# Run and deploy Frendo app
 
 This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/54efab7b-9e81-4ec3-aff5-75f6517f9acb
-
 ## Run Locally
 
 **Prerequisites:**  [Android Studio](https://developer.android.com/studio)
@@ -16,3 +13,4 @@ View your app in AI Studio: https://ai.studio/apps/54efab7b-9e81-4ec3-aff5-75f65
 4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
 5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
 6. Run the app on an emulator or physical device
+
