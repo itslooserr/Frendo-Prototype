@@ -1,0 +1,6 @@
+{
+  "name": "Frendo",
+  "description": "A secure, ultra-clean messaging application like WhatsApp, prioritizing sleek minimalism, custom profile controls, and AES-256 encrypted chat tunnels.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
