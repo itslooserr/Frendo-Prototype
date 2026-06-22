@@ -8,6 +8,7 @@ import com.example.data.Contact
 import com.example.data.Message
 import com.example.data.SecureTextRepository
 import com.example.data.UserSession
+import com.example.data.LocalAccount
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -17,6 +18,10 @@ class SecureTextViewModel(private val repository: SecureTextRepository) : ViewMo
     // --- User state ---
     val userSession: StateFlow<UserSession?> = repository.userSession
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    // --- Registered Local Accounts ---
+    val allLocalAccounts: StateFlow<List<LocalAccount>> = repository.allLocalAccounts
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // --- Onboarding Live Visual Customization States ---
     private val _onboardingIsDarkMode = MutableStateFlow<Boolean?>(null)
@@ -75,9 +80,28 @@ class SecureTextViewModel(private val repository: SecureTextRepository) : ViewMo
 
     // --- Actions ---
 
-    fun registerUser(phoneNumber: String, name: String, passphraseHex: String) {
+    fun registerUser(phoneNumber: String, name: String, passphraseHex: String, bio: String = "Hey there! I am using Frendo.", avatarColorHex: String = "#0061A4") {
         viewModelScope.launch {
-            repository.registerUser(phoneNumber, name, passphraseHex)
+            repository.registerUser(phoneNumber, name, passphraseHex, bio, avatarColorHex)
+        }
+    }
+
+    fun loginAsAccount(account: LocalAccount) {
+        viewModelScope.launch {
+            repository.loginAsAccount(account)
+        }
+    }
+
+    fun updateLocalAccountProfile(name: String, bio: String, customPfpPath: String?) {
+        val session = userSession.value ?: return
+        viewModelScope.launch {
+            repository.updateLocalAccountProfile(session.phoneNumber, name, bio, customPfpPath)
+        }
+    }
+
+    fun deleteLocalAccount(phoneNumber: String) {
+        viewModelScope.launch {
+            repository.deleteLocalAccount(phoneNumber)
         }
     }
 
@@ -94,6 +118,23 @@ class SecureTextViewModel(private val repository: SecureTextRepository) : ViewMo
 
     fun selectContact(contact: Contact?) {
         _activeChatContact.value = contact
+    }
+
+    fun selectOrAddContact(name: String, phoneNumber: String) {
+        viewModelScope.launch {
+            val existing = contacts.value.firstOrNull { it.phoneNumber == phoneNumber }
+            if (existing != null) {
+                _activeChatContact.value = existing
+            } else {
+                repository.addContact(name, phoneNumber)
+                // Wait briefly for flow to update
+                kotlinx.coroutines.delay(200)
+                val updated = contacts.value.firstOrNull { it.phoneNumber == phoneNumber }
+                if (updated != null) {
+                    _activeChatContact.value = updated
+                }
+            }
+        }
     }
 
     fun createContact(name: String, phoneNumber: String) {
@@ -148,15 +189,18 @@ class SecureTextViewModel(private val repository: SecureTextRepository) : ViewMo
         }
     }
 
-    fun updateUserProfile(name: String, avatarColorHex: String, avatarEmoji: String) {
+    fun updateUserProfile(name: String, avatarColorHex: String, avatarEmoji: String, customPfpPath: String?, bio: String) {
         val session = userSession.value ?: return
         viewModelScope.launch {
             val updated = session.copy(
                 name = name,
                 avatarColorHex = avatarColorHex,
-                avatarEmoji = avatarEmoji
+                avatarEmoji = avatarEmoji,
+                customPfpPath = customPfpPath,
+                bio = bio
             )
             repository.updateUserSession(updated)
+            repository.updateLocalAccountProfile(session.phoneNumber, name, bio, customPfpPath)
         }
     }
 

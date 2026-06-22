@@ -10,6 +10,7 @@ import com.google.firebase.auth.PhoneAuthCredential
 import androidx.compose.ui.draw.scale
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,7 +36,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -47,10 +50,25 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
+import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.widget.Toast
+import android.provider.ContactsContract
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import android.Manifest
+import java.io.File
+import java.io.FileOutputStream
+import java.io.ByteArrayOutputStream
 import com.example.crypto.EncryptionUtils
 import com.example.data.Contact
 import com.example.data.Message
 import com.example.data.UserSession
+import com.example.data.LocalAccount
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -69,6 +87,234 @@ fun Float.scaled() = (this * LocalAppThemePreferences.current.fontSizeMultiplier
 
 @Composable
 fun Int.scaled() = (this.toFloat() * LocalAppThemePreferences.current.fontSizeMultiplier).sp
+
+// Dynamic formatting helper for phone numbers
+fun formatPhoneNumber(raw: String): String {
+    val clean = raw.filter { it.isDigit() }
+    if (clean.isEmpty()) return ""
+    return if (clean.length > 10) {
+        "+" + clean.substring(0, clean.length - 10) + " " + clean.substring(clean.length - 10, clean.length - 5) + " " + clean.substring(clean.length - 5)
+    } else if (clean.length == 10) {
+        "+91 " + clean.take(5) + " " + clean.drop(5)
+    } else {
+        raw
+    }
+}
+
+// Contacts provider helper function
+fun getDeviceContacts(context: android.content.Context): List<Contact> {
+    val contactsList = mutableListOf<Contact>()
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+        return contactsList
+    }
+    try {
+        val cursor = context.contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            arrayOf(
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            ),
+            null,
+            null,
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+        )
+        cursor?.use {
+            val nameIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val numIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            while (it.moveToNext()) {
+                if (nameIdx >= 0 && numIdx >= 0) {
+                    val name = it.getString(nameIdx)
+                    var num = it.getString(numIdx) ?: ""
+                    num = num.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+                    if (num.isNotBlank() && name.isNotBlank()) {
+                        val colors = listOf("#E57373", "#81C784", "#64B5F6", "#FFB74D", "#BA68C8", "#4DB6AC", "#D4E157")
+                        contactsList.add(
+                            Contact(
+                                id = 0,
+                                phoneNumber = num,
+                                name = name,
+                                status = "Hey there! I am using Frendo.",
+                                avatarColorHex = colors.random()
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return contactsList.distinctBy { it.phoneNumber }
+}
+
+@Composable
+fun ProfileAvatar(
+    customPfpPath: String?,
+    avatarColorHex: String,
+    avatarEmoji: String,
+    size: androidx.compose.ui.unit.Dp = 48.dp,
+    emojiSize: androidx.compose.ui.unit.TextUnit = 24.sp,
+    isGroup: Boolean = false
+) {
+    val avatarBgColor = try {
+        Color(android.graphics.Color.parseColor(avatarColorHex))
+    } catch (e: Exception) {
+        MaterialTheme.colorScheme.primary
+    }
+
+    val pfpFile = customPfpPath?.let { File(it) }
+    val customBitmap = remember(customPfpPath) {
+        if (pfpFile != null && pfpFile.exists()) {
+            try {
+                BitmapFactory.decodeFile(pfpFile.absolutePath)
+            } catch (e: Exception) {
+                null
+            }
+        } else null
+    }
+
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(avatarBgColor),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isGroup) {
+            Icon(
+                imageVector = Icons.Default.Groups,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(size / 2)
+            )
+        } else if (customBitmap != null) {
+            Image(
+                bitmap = customBitmap.asImageBitmap(),
+                contentDescription = "Profile Photo",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            // Fallback to active emoji
+            Text(
+                text = if (avatarEmoji.isBlank()) "👤" else avatarEmoji,
+                fontSize = emojiSize
+            )
+        }
+    }
+}
+
+@Composable
+fun BotSliderPuzzle(
+    onPassed: () -> Unit
+) {
+    var sliderValue by remember { mutableStateOf(0f) }
+    var hasPassed by remember { mutableStateOf(false) }
+    val targetValue = 75f // target offset percentage
+    
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "🤖 HUMAN VERIFICATION PUZZLE",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+            Text(
+                text = "Slide the locker handle to slot on the right to complete verification.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f), RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                // Target slot outline
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val targetX = size.width * (targetValue / 100f)
+                    drawRoundRect(
+                        color = Color.LightGray.copy(alpha = 0.5f),
+                        topLeft = androidx.compose.ui.geometry.Offset(targetX - 12.dp.toPx(), size.height / 2f - 12.dp.toPx()),
+                        size = androidx.compose.ui.geometry.Size(24.dp.toPx(), 24.dp.toPx()),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp)
+                ) {
+                    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                        val maxW = maxWidth
+                        val currentOffset = maxW * (sliderValue / 100f)
+                        
+                        Box(
+                            modifier = Modifier
+                                .offset(x = currentOffset)
+                                .align(Alignment.CenterStart)
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (hasPassed) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (hasPassed) Icons.Default.Check else Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (!hasPassed) {
+                Slider(
+                    value = sliderValue,
+                    onValueChange = {
+                        sliderValue = it
+                        if (kotlin.math.abs(it - targetValue) < 4f) {
+                            hasPassed = true
+                            sliderValue = targetValue
+                            onPassed()
+                        }
+                    },
+                    valueRange = 0f..100f,
+                    modifier = Modifier.fillMaxWidth().testTag("bot_verification_slider")
+                )
+            } else {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                ) {
+                    Icon(Icons.Default.Verified, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(18.dp))
+                    Text(
+                        text = "Puzzle Solved! Tap Continue below.",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF4CAF50)
+                    )
+                }
+            }
+        }
+    }
+}
 
 // Palette Definitions
 val PaletteAzure = "#0288D1"
@@ -193,12 +439,24 @@ fun FrendoLogoHeader(modifier: Modifier = Modifier) {
 @Composable
 fun OnboardingScreen(viewModel: SecureTextViewModel) {
     var step by remember { mutableStateOf(1) } // 1: Phone, 2: OTP, 3: Profile Setup
-    var phoneNumber by remember { mutableStateOf("") }
+    var countryPrefix by remember { mutableStateOf("+91") }
+    var enteredPhoneCore by remember { mutableStateOf("") }
+    
+    // Derived formatted phone
+    val phoneNumber = remember(countryPrefix, enteredPhoneCore) {
+        countryPrefix + enteredPhoneCore.filter { it.isDigit() }
+    }
+    
     var enteredOtp by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var passphrase by remember { mutableStateOf("frendosecret") }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var isPassphraseVisible by remember { mutableStateOf(false) }
+
+    // Multiple Offline Users Switcher state
+    val localAccounts by viewModel.allLocalAccounts.collectAsState()
+    var showRegistrationForm by remember { mutableStateOf(false) }
+    var isBotVerified by remember { mutableStateOf(false) }
 
     // Onboarding Visual Customization states (collected from ViewModel)
     val onboardingIsDarkMode by viewModel.onboardingIsDarkMode.collectAsState()
@@ -224,6 +482,10 @@ fun OnboardingScreen(viewModel: SecureTextViewModel) {
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // Prefix selections list
+    val prefixList = listOf("+91 (IN)", "+1 (US/CA)", "+44 (UK)", "+61 (AU)", "+81 (JP)", "+49 (DE)")
+    var prefixExpanded by remember { mutableStateOf(false) }
 
     // Countdown Timer Hook
     LaunchedEffect(isTimerActive, countdownSeconds) {
@@ -269,16 +531,11 @@ fun OnboardingScreen(viewModel: SecureTextViewModel) {
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "🎨 ONBOARDING EXPERIMENT ENGINE",
+                                text = "🎨 ONBOARDING CONFIGURATION ENGINE",
                                 fontSize = 10.scaled(),
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontFamily = FontFamily.Monospace
-                            )
-                            Text(
-                                text = "Test Accessibility Controls Live",
-                                fontSize = 9.scaled(),
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )
                         }
 
@@ -353,541 +610,836 @@ fun OnboardingScreen(viewModel: SecureTextViewModel) {
                     }
                 }
 
-                FrendoLogoHeader(modifier = Modifier.padding(vertical = 8.dp))
+                FrendoLogoHeader(modifier = Modifier.padding(vertical = 4.dp))
 
-                // Mode Selector Option
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    val activeModeContainerColor = MaterialTheme.colorScheme.surface
-                    val activeModeContentColor = MaterialTheme.colorScheme.primary
-
-                    Button(
-                        onClick = { isSimulatedMode = true; errorMsg = null },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isSimulatedMode) activeModeContainerColor else Color.Transparent,
-                            contentColor = if (isSimulatedMode) activeModeContentColor else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        ),
-                        contentPadding = PaddingValues(0.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(34.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Simulated Mode", fontSize = 10.scaled(), fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    Button(
-                        onClick = {
-                            if (FirebaseAuthManager.isFirebaseInitialized) {
-                                isSimulatedMode = false
-                                errorMsg = null
-                            } else {
-                                authLogs = authLogs + "[Error] Failed to initialize real Firebase Auth Client. Missing google-services.json!"
-                                showFirebaseSetupHelp = true
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (!isSimulatedMode) activeModeContainerColor else Color.Transparent,
-                            contentColor = if (!isSimulatedMode) activeModeContentColor else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        ),
-                        contentPadding = PaddingValues(0.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(34.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Real Firebase SDK", fontSize = 10.scaled(), fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                // Inline Help block if standard Firebase unavailable
-                if (showFirebaseSetupHelp) {
-                    AlertDialog(
-                        onDismissRequest = { showFirebaseSetupHelp = false },
-                        confirmButton = {
-                            TextButton(onClick = { showFirebaseSetupHelp = false }) {
-                                Text("Acknowledge & Use Sandbox Mode")
-                            }
-                        },
-                        title = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF9100))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Firebase Setup Required", fontSize = 16.scaled())
-                            }
-                        },
-                        text = {
-                            Text(
-                                text = "To use the real Firebase SDK, add your 'google-services.json' to the 'app/' directory of your project and configure the Google Services buildscript plugin. Under Frendo's resilient design, we automatically fallback to our developer-friendly Simulated Mode so you can preview all features without any friction.",
-                                fontSize = 12.scaled()
-                            )
-                        }
+                // If saved accounts exist and they haven't explicitly chosen to register a new session, show profiles grid/switcher!
+                if (localAccounts.isNotEmpty() && !showRegistrationForm) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "👥 REGISTERED ACCOUNTS ON THIS DEVICE",
+                        fontSize = 12.scaled(),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(bottom = 6.dp)
                     )
-                }
+                    Text(
+                        text = "Clean multi-session manager. Select any local profile to unlock instantly without password or SMS check:",
+                        fontSize = 11.scaled(),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(bottom = 12.dp),
+                        textAlign = TextAlign.Center
+                    )
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 2. Authentication Panel Card
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
-                    shape = RoundedCornerShape(20.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
                     Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
                     ) {
-                        when (step) {
-                            1 -> {
-                                Text(
-                                    text = "FIREBASE SMS OTP PORTAL",
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontSize = 11.scaled(),
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = if (isSimulatedMode) {
-                                        "Authenticate with our local secure sandbox. Type any valid phone number below to trigger SMS verification."
-                                    } else {
-                                        "Authenticate with real Firebase Phone SMS network. Code will be dispatched to your physical phone."
-                                    },
-                                    fontSize = 12.scaled(),
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                                )
-
-                                OutlinedTextField(
-                                    value = phoneNumber,
-                                    onValueChange = { phoneNumber = it },
-                                    label = { Text("Phone Number", fontSize = 12.scaled()) },
-                                    leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                                    singleLine = true,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("onboarding_phone_input"),
-                                    placeholder = { Text("+1 (555) 123-4567", fontSize = 12.scaled()) },
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                        localAccounts.forEach { account ->
+                            Card(
+                                onClick = { viewModel.loginAsAccount(account) },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                                shape = RoundedCornerShape(16.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    ProfileAvatar(
+                                        customPfpPath = account.customPfpPath,
+                                        avatarColorHex = account.avatarColorHex,
+                                        avatarEmoji = account.avatarEmoji,
+                                        size = 46.dp,
+                                        emojiSize = 22.sp
                                     )
-                                )
-
-                                if (isSendingOtp) {
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = account.name,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = account.phoneNumber,
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = account.bio,
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                            maxLines = 1
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.deleteLocalAccount(account.phoneNumber) }
                                     ) {
-                                        CircularProgressIndicator(modifier = Modifier.size(28.dp))
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text("Sending Firebase SMS Code...", fontSize = 11.scaled(), fontWeight = FontWeight.Bold)
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteForever,
+                                            contentDescription = "Unregister profile",
+                                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                                            modifier = Modifier.size(20.dp)
+                                        )
                                     }
                                 }
                             }
-                            2 -> {
-                                Text(
-                                    text = "ENTER 6-DIGIT VERIFICATION CODE",
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontSize = 11.scaled(),
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace
-                                )
+                        }
 
-                                // Real-Time SMS Notification Simulation Auto-Filler (Aesthetic Excellence)
-                                if (isSimulatedMode) {
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = { 
+                                showRegistrationForm = true 
+                                isBotVerified = false
+                                step = 1
+                            },
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.PersonAddAlt, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("LOGIN WITH ANOTHER NUMBER", fontWeight = FontWeight.Black, fontSize = 11.sp)
+                        }
+                    }
+                } else {
+                    // Show standard Registration Steps (Form)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val activeModeContainerColor = MaterialTheme.colorScheme.surface
+                        val activeModeContentColor = MaterialTheme.colorScheme.primary
+
+                        Button(
+                            onClick = { isSimulatedMode = true; errorMsg = null },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSimulatedMode) activeModeContainerColor else Color.Transparent,
+                                contentColor = if (isSimulatedMode) activeModeContentColor else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            ),
+                            contentPadding = PaddingValues(0.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Simulated Mode", fontSize = 10.scaled(), fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                if (FirebaseAuthManager.isFirebaseInitialized) {
+                                    isSimulatedMode = false
+                                    errorMsg = null
+                                } else {
+                                    authLogs = authLogs + "[Error] Failed to initialize real Firebase Auth Client. Missing google-services.json!"
+                                    showFirebaseSetupHelp = true
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (!isSimulatedMode) activeModeContainerColor else Color.Transparent,
+                                contentColor = if (!isSimulatedMode) activeModeContentColor else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            ),
+                            contentPadding = PaddingValues(0.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Real Firebase SDK", fontSize = 10.scaled(), fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Inline Help block if standard Firebase unavailable
+                    if (showFirebaseSetupHelp) {
+                        AlertDialog(
+                            onDismissRequest = { showFirebaseSetupHelp = false },
+                            confirmButton = {
+                                TextButton(onClick = { showFirebaseSetupHelp = false }) {
+                                    Text("Acknowledge & Use Sandbox Mode")
+                                }
+                            },
+                            title = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF9100))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Firebase Setup Required", fontSize = 16.scaled())
+                                }
+                            },
+                            text = {
+                                val clipManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                                val fingerprints = remember { getAppFingerprints(context) }
+                                val sha1 = fingerprints?.first ?: "Pending retrieval... (Compile android target)"
+                                val sha256 = fingerprints?.second ?: "Pending retrieval... (Compile android target)"
+                                
+                                Column(
+                                    modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        text = "To enable real Firebase Authentication (automatic SMS OTP login), please link your Firebase project by executing these step-by-step instructions:",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    
+                                    androidx.compose.material3.HorizontalDivider(
+                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                                        thickness = 1.dp
+                                    )
+                                    
+                                    Text(
+                                        text = "1. REGISTER APPLICATION ID",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontFamily = FontFamily.Monospace
+                                    )
                                     Card(
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFF9100).copy(alpha = 0.12f)),
-                                        border = BorderStroke(1.dp, Color(0xFFFF9100).copy(alpha = 0.4f)),
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.fillMaxWidth()
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                clipManager.setText(androidx.compose.ui.text.AnnotatedString("com.aistudio.securetexting.fquwla"))
+                                                Toast.makeText(context, "Package Name copied!", Toast.LENGTH_SHORT).show()
+                                            }
                                     ) {
                                         Row(
-                                            modifier = Modifier
-                                                .clickable { 
-                                                    enteredOtp = "123456"
-                                                    authLogs = authLogs + "[AutoFill] Populated 123456 from incoming SMS notification."
-                                                }
-                                                .padding(10.dp),
+                                            modifier = Modifier.padding(10.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Icon(Icons.Default.Sms, contentDescription = null, tint = Color(0xFFFF9100), modifier = Modifier.size(22.dp))
-                                            Spacer(modifier = Modifier.width(10.dp))
                                             Column(modifier = Modifier.weight(1f)) {
+                                                Text("Package Name:", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary)
+                                                Text("com.aistudio.securetexting.fquwla", fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                                            }
+                                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                    
+                                    Text(
+                                        text = "2. ADD SHA DIGEST FINGERPRINTS",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                clipManager.setText(androidx.compose.ui.text.AnnotatedString(sha1))
+                                                Toast.makeText(context, "SHA-1 Fingerprint copied!", Toast.LENGTH_SHORT).show()
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text("SHA-1 Fingerprint (Copy to Firebase settings):", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary)
+                                                Text(sha1, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
+                                            }
+                                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                clipManager.setText(androidx.compose.ui.text.AnnotatedString(sha256))
+                                                Toast.makeText(context, "SHA-256 Fingerprint copied!", Toast.LENGTH_SHORT).show()
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text("SHA-256 Fingerprint (Copy to Firebase settings):", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary)
+                                                Text(sha256, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
+                                            }
+                                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+
+                                    Text(
+                                        text = "3. ACTIVATE PHONE AUTH SMS",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "In your Firebase Console: Go to Authentication -> Sign-In Method -> Click 'Add New Provider' -> Select 'Phone' -> Enable & Click Save.",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+
+                                    Text(
+                                        text = "4. REPLACE CONFIGURATION FILE",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "Download the 'google-services.json' file from the settings page for your Android app in your Firebase Console, then save/replace it inside '/app/' directory. Frendo compiles seamlessly using your production credentials!",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // 2. Authentication Panel Card
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            when (step) {
+                                1 -> {
+                                    Text(
+                                        text = "FIREBASE SMS OTP PORTAL",
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontSize = 11.scaled(),
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = if (isSimulatedMode) {
+                                            "Authenticate with our local secure sandbox. Choose your Country Code and write your phone number below."
+                                        } else {
+                                            "Authenticate with real Firebase Phone SMS network. Code will be dispatched to your physical phone."
+                                        },
+                                        fontSize = 12.scaled(),
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                                    )
+
+                                    // Country Prefix dropdown switcher
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Box(modifier = Modifier.wrapContentSize(Alignment.TopStart)) {
+                                            Button(
+                                                onClick = { prefixExpanded = true },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                                ),
+                                                shape = RoundedCornerShape(12.dp),
+                                                modifier = Modifier.height(56.dp)
+                                            ) {
+                                                Text(text = countryPrefix, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.padding(start = 2.dp))
+                                            }
+                                            DropdownMenu(
+                                                expanded = prefixExpanded,
+                                                onDismissRequest = { prefixExpanded = false }
+                                            ) {
+                                                prefixList.forEach { value ->
+                                                    DropdownMenuItem(
+                                                        text = { Text(value, fontWeight = FontWeight.SemiBold, fontSize = 12.sp) },
+                                                        onClick = {
+                                                            countryPrefix = value.split(" ").first()
+                                                            prefixExpanded = false
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        OutlinedTextField(
+                                            value = enteredPhoneCore,
+                                            onValueChange = { enteredPhoneCore = it },
+                                            label = { Text("Phone Number", fontSize = 12.scaled()) },
+                                            leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) },
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("onboarding_phone_input"),
+                                            placeholder = { Text("e.g. 9876543210", fontSize = 12.scaled()) },
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                                unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                                            )
+                                        )
+                                    }
+
+                                    // Live visual check of correct sanitizer format
+                                    if (enteredPhoneCore.isNotBlank()) {
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.PlaylistAddCheck, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
                                                 Text(
-                                                    text = "💬 [Simulated SMS Provider] Frendo Code:",
-                                                    fontSize = 10.scaled(),
+                                                    text = "Formatted System Target: " + formatPhoneNumber(phoneNumber),
+                                                    fontSize = 11.sp,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFFFF9100)
-                                                )
-                                                Text(
-                                                    text = "Code is 123456. Tap here to auto-fill.",
-                                                    fontSize = 12.scaled(),
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    color = MaterialTheme.colorScheme.onSurface
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontFamily = FontFamily.Monospace
                                                 )
                                             }
                                         }
                                     }
-                                } else {
+
+                                    // BOT CONTROL PUZZLE
+                                    BotSliderPuzzle(onPassed = {
+                                        isBotVerified = true
+                                        errorMsg = null
+                                    })
+
+                                    if (isSendingOtp) {
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                            Text("Sending Firebase SMS Code...", fontSize = 11.scaled(), fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                                2 -> {
+                                    Text(
+                                        text = "ENTER 6-DIGIT VERIFICATION CODE",
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontSize = 11.scaled(),
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+
+                                    // Real-Time SMS Notification Simulation Auto-Filler (Aesthetic Excellence)
+                                    if (isSimulatedMode) {
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFF9100).copy(alpha = 0.12f)),
+                                            border = BorderStroke(1.dp, Color(0xFFFF9100).copy(alpha = 0.4f)),
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .clickable { 
+                                                        enteredOtp = "123456"
+                                                        authLogs = authLogs + "[AutoFill] Populated 123456 from incoming SMS notification."
+                                                    }
+                                                    .padding(10.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Sms, contentDescription = null, tint = Color(0xFFFF9100), modifier = Modifier.size(22.dp))
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = "💬 [Simulated SMS Provider] Frendo Code:",
+                                                        fontSize = 10.scaled(),
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color(0xFFFF9100)
+                                                    )
+                                                    Text(
+                                                        text = "Code is 123456. Tap here to auto-fill.",
+                                                        fontSize = 12.scaled(),
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                                .padding(10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.VpnKey, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("A physical Firebase OTP is loading... check your phone messages.", fontSize = 11.scaled(), color = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+
+                                    OutlinedTextField(
+                                        value = enteredOtp,
+                                        onValueChange = { enteredOtp = it },
+                                        label = { Text("verification OTP Code", fontSize = 12.scaled()) },
+                                        leadingIcon = { Icon(Icons.Default.Pin, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("onboarding_otp_input"),
+                                        placeholder = { Text("Code e.g. 123456", fontSize = 12.scaled()) },
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                            unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                                        )
+                                    )
+
+                                    // Countdown Timer & Resender Link Row
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (countdownSeconds > 0) {
+                                            Text(
+                                                text = "Resend code in ${countdownSeconds}s",
+                                                fontSize = 11.scaled(),
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                            )
+                                        } else {
+                                            TextButton(
+                                                onClick = {
+                                                    countdownSeconds = 30
+                                                    isTimerActive = true
+                                                    enteredOtp = ""
+                                                    authLogs = authLogs + "[System] Requesting OTP Code retransmission..."
+                                                    if (isSimulatedMode) {
+                                                        authLogs = authLogs + "[Simulation] SMS delivered successfully! ID: r-sms-9189"
+                                                    } else {
+                                                        // Trigger retry on firebase
+                                                        val activity = context as? Activity
+                                                        if (activity != null && phoneNumber.isNotBlank()) {
+                                                            FirebaseAuthManager.sendVerificationCode(
+                                                                activity = activity,
+                                                                phoneNumber = phoneNumber,
+                                                                onCodeSent = { id, tok ->
+                                                                    firebaseVerificationId = id
+                                                                    resendToken = tok
+                                                                    authLogs = authLogs + "[Firebase] Code resubmitted."
+                                                                },
+                                                                onVerificationCompleted = { cred ->
+                                                                    enteredOtp = cred.smsCode ?: ""
+                                                                },
+                                                                onVerificationFailed = { ex ->
+                                                                    errorMsg = "Verification failed: ${ex.localizedMessage}"
+                                                                }
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                                contentPadding = PaddingValues(0.dp)
+                                            ) {
+                                                Text("Resend Code via SMS", fontSize = 11.scaled(), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                            }
+                                        }
+
+                                        TextButton(
+                                            onClick = {
+                                                step = 1
+                                                isTimerActive = false
+                                                enteredOtp = ""
+                                                errorMsg = null
+                                            },
+                                            contentPadding = PaddingValues(0.dp)
+                                        ) {
+                                            Text("Change Phone", fontSize = 11.scaled(), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                                        }
+                                    }
+                                }
+                                3 -> {
+                                    Text(
+                                        text = "SECURE YOUR PROFILE METADATA",
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontSize = 11.scaled(),
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "Define your offline cryptographic passphrase inside Room database.",
+                                        fontSize = 12.scaled(),
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                                    )
+
+                                    OutlinedTextField(
+                                        value = name,
+                                        onValueChange = { name = it },
+                                        label = { Text("Display Nickname", fontSize = 12.scaled()) },
+                                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) },
+                                        singleLine = true,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("onboarding_name_input"),
+                                        placeholder = { Text("e.g. Laxmikant", fontSize = 12.scaled()) }
+                                    )
+
+                                    OutlinedTextField(
+                                        value = passphrase,
+                                        onValueChange = { passphrase = it },
+                                        label = { Text("Crypto Database Passphrase", fontSize = 12.scaled()) },
+                                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) },
+                                        visualTransformation = if (isPassphraseVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                        trailingIcon = {
+                                            IconButton(onClick = { isPassphraseVisible = !isPassphraseVisible }) {
+                                                Icon(
+                                                    imageVector = if (isPassphraseVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        },
+                                        singleLine = true,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("onboarding_pass_input"),
+                                        placeholder = { Text("Encryption code", fontSize = 12.scaled()) }
+                                    )
+
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
-                                            .padding(10.dp),
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+                                            .padding(8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(Icons.Default.VpnKey, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                        Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("A physical Firebase OTP is loading... check your phone messages.", fontSize = 11.scaled(), color = MaterialTheme.colorScheme.primary)
+                                        Text(
+                                            text = "Keys reside purely locally in AES encrypted sandbox tables.",
+                                            fontSize = 10.scaled(),
+                                            lineHeight = 13.sp,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        )
                                     }
                                 }
+                            }
 
-                                OutlinedTextField(
-                                    value = enteredOtp,
-                                    onValueChange = { enteredOtp = it },
-                                    label = { Text("verification OTP Code", fontSize = 12.scaled()) },
-                                    leadingIcon = { Icon(Icons.Default.Pin, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("onboarding_otp_input"),
-                                    placeholder = { Text("Code e.g. 123456", fontSize = 12.scaled()) },
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
-                                    )
+                            if (errorMsg != null) {
+                                Text(
+                                    text = errorMsg!!,
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontSize = 11.scaled(),
+                                    fontWeight = FontWeight.SemiBold
                                 )
+                            }
 
-                                // Countdown Timer & Resender Link Row
+                            // Developer/Firebase Telemetry Console Log Panel
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color.Black.copy(alpha = 0.85f), RoundedCornerShape(10.dp))
+                                    .padding(8.dp)
+                            ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    if (countdownSeconds > 0) {
-                                        Text(
-                                            text = "Resend code in ${countdownSeconds}s",
-                                            fontSize = 11.scaled(),
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                        )
-                                    } else {
-                                        TextButton(
-                                            onClick = {
-                                                countdownSeconds = 30
-                                                isTimerActive = true
-                                                enteredOtp = ""
-                                                authLogs = authLogs + "[System] Requesting OTP Code retransmission..."
-                                                if (isSimulatedMode) {
-                                                    authLogs = authLogs + "[Simulation] SMS delivered successfully! ID: r-sms-9189"
-                                                } else {
-                                                    // Trigger retry on firebase
-                                                    val activity = context as? Activity
-                                                    if (activity != null && phoneNumber.isNotBlank()) {
-                                                        FirebaseAuthManager.sendVerificationCode(
-                                                            activity = activity,
-                                                            phoneNumber = phoneNumber,
-                                                            onCodeSent = { id, tok ->
-                                                                firebaseVerificationId = id
-                                                                resendToken = tok
-                                                                authLogs = authLogs + "[Firebase] Code resubmitted."
-                                                            },
-                                                            onVerificationCompleted = { cred ->
-                                                                enteredOtp = cred.smsCode ?: ""
-                                                            },
-                                                            onVerificationFailed = { ex ->
-                                                                errorMsg = "Verification failed: ${ex.localizedMessage}"
-                                                            }
-                                                        )
-                                                    }
-                                                }
-                                            },
-                                            contentPadding = PaddingValues(0.dp)
-                                        ) {
-                                            Text("Resend Code via SMS", fontSize = 11.scaled(), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                        }
-                                    }
-
-                                    TextButton(
-                                        onClick = {
-                                            step = 1
-                                            isTimerActive = false
-                                            enteredOtp = ""
-                                            errorMsg = null
-                                        },
-                                        contentPadding = PaddingValues(0.dp)
-                                    ) {
-                                        Text("Change Phone", fontSize = 11.scaled(), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                                    }
-                                }
-                            }
-                            3 -> {
-                                Text(
-                                    text = "SECURE YOUR PROFILE METADATA",
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontSize = 11.scaled(),
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = "Define your offline cryptographic passphrase inside Room database.",
-                                    fontSize = 12.scaled(),
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                                )
-
-                                OutlinedTextField(
-                                    value = name,
-                                    onValueChange = { name = it },
-                                    label = { Text("Display Nickname", fontSize = 12.scaled()) },
-                                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) },
-                                    singleLine = true,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("onboarding_name_input"),
-                                    placeholder = { Text("e.g. Laxmikant", fontSize = 12.scaled()) }
-                                )
-
-                                OutlinedTextField(
-                                    value = passphrase,
-                                    onValueChange = { passphrase = it },
-                                    label = { Text("Crypto Database Passphrase", fontSize = 12.scaled()) },
-                                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) },
-                                    visualTransformation = if (isPassphraseVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                    trailingIcon = {
-                                        IconButton(onClick = { isPassphraseVisible = !isPassphraseVisible }) {
-                                            Icon(
-                                                imageVector = if (isPassphraseVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                    },
-                                    singleLine = true,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("onboarding_pass_input"),
-                                    placeholder = { Text("Encryption code", fontSize = 12.scaled()) }
-                                )
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
-                                        .padding(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "Keys reside purely locally in AES encrypted sandbox tables.",
-                                        fontSize = 10.scaled(),
-                                        lineHeight = 13.sp,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        text = "📟 FIREBASE CLIENT CONSOLE",
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFFF9100),
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = if (isSimulatedMode) "SIMULATED GATEWAY" else "REAL SDK CLIENT",
+                                        fontSize = 8.sp,
+                                        color = Color.Green,
+                                        fontFamily = FontFamily.Monospace
                                     )
                                 }
-                            }
-                        }
-
-                        if (errorMsg != null) {
-                            Text(
-                                text = errorMsg!!,
-                                color = MaterialTheme.colorScheme.error,
-                                fontSize = 11.scaled(),
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        // Developer/Firebase Telemetry Console Log Panel
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.Black.copy(alpha = 0.85f), RoundedCornerShape(10.dp))
-                                .padding(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "📟 FIREBASE CLIENT CONSOLE",
-                                    fontSize = 8.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFFF9100),
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = if (isSimulatedMode) "SIMULATED GATEWAY" else "REAL SDK CLIENT",
-                                    fontSize = 8.sp,
-                                    color = Color.Green,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(54.dp)
-                                    .verticalScroll(rememberScrollState())
-                            ) {
-                                Column {
-                                    authLogs.forEach { log ->
-                                        Text(
-                                            text = log,
-                                            fontSize = 8.sp,
-                                            color = Color.LightGray,
-                                            fontFamily = FontFamily.Monospace,
-                                            lineHeight = 10.sp
-                                        )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(54.dp)
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    Column {
+                                        authLogs.forEach { log ->
+                                            Text(
+                                                text = log,
+                                                fontSize = 8.sp,
+                                                color = Color.LightGray,
+                                                fontFamily = FontFamily.Monospace,
+                                                lineHeight = 10.sp
+                                            )
+                                        }
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Submissions Actions
+                    Button(
+                        onClick = {
+                            errorMsg = null
+                            when (step) {
+                                1 -> {
+                                    if (enteredPhoneCore.trim().length < 8) {
+                                        errorMsg = "Please enter a valid phone number (minimum 8 digits)."
+                                        authLogs = authLogs + "[Validation] Invalid format digits count."
+                                        return@Button
+                                    }
+                                    if (!isBotVerified) {
+                                        errorMsg = "Drag the puzzle slider to verify you are not a bot!"
+                                        authLogs = authLogs + "[Bot Challenge] Puzzle is unsolved."
+                                        return@Button
+                                    }
+
+                                    isSendingOtp = true
+                                    val trimmedPhone = phoneNumber.trim()
+                                    if (isSimulatedMode) {
+                                        // Simulated flow with delays
+                                        authLogs = authLogs + "19:28:44 [LocalSimulator] Recaptcha bypass resolved. Dispatching code..."
+                                        scope.launch {
+                                            kotlinx.coroutines.delay(1200)
+                                            authLogs = authLogs + "19:28:46 [LocalSimulator] SMS dispatched to: $trimmedPhone"
+                                            isSendingOtp = false
+                                            step = 2
+                                            countdownSeconds = 30
+                                            isTimerActive = true
+                                        }
+                                    } else {
+                                        // Real Firebase setup
+                                        val activity = context as? Activity
+                                        if (activity != null) {
+                                            authLogs = authLogs + "[Firebase] Connection check: requesting SDK connection..."
+                                            FirebaseAuthManager.sendVerificationCode(
+                                                activity = activity,
+                                                phoneNumber = trimmedPhone,
+                                                onCodeSent = { verificationId, token ->
+                                                    firebaseVerificationId = verificationId
+                                                    resendToken = token
+                                                    isSendingOtp = false
+                                                    step = 2
+                                                    countdownSeconds = 30
+                                                    isTimerActive = true
+                                                    authLogs = authLogs + "[Firebase] OnCodeSent verificationId: $verificationId"
+                                                },
+                                                onVerificationCompleted = { credential ->
+                                                    enteredOtp = credential.smsCode ?: ""
+                                                    isSendingOtp = false
+                                                    authLogs = authLogs + "[Firebase] Verification Auto-completed successfully."
+                                                },
+                                                onVerificationFailed = { ex ->
+                                                    isSendingOtp = false
+                                                    errorMsg = "Firebase transmission error: ${ex.localizedMessage}. Reverting to high-integrity simulated engine..."
+                                                    authLogs = authLogs + "[Firebase Error] ${ex.localizedMessage}"
+                                                    // Fallback so user is not blocked
+                                                    isSimulatedMode = true
+                                                }
+                                            )
+                                        } else {
+                                            isSendingOtp = false
+                                            errorMsg = "Failed to bind Firebase trigger to standard Android Activity context."
+                                        }
+                                    }
+                                }
+                                2 -> {
+                                    if (isSimulatedMode) {
+                                        if (enteredOtp.trim() != "123456") {
+                                            errorMsg = "Incorrect Verification OTP Code. Enter '123456' or tap notification to fill."
+                                            authLogs = authLogs + "[Validation] Wrong code input."
+                                        } else {
+                                            authLogs = authLogs + "[LocalSimulator] Auth validation verified successfully."
+                                            step = 3
+                                        }
+                                    } else {
+                                        if (enteredOtp.trim().length < 6) {
+                                            errorMsg = "Code must be 6 digits."
+                                        } else {
+                                            authLogs = authLogs + "[Firebase] Submitting credential verification packet..."
+                                            FirebaseAuthManager.verifyCredential(
+                                                verificationId = firebaseVerificationId,
+                                                otpCode = enteredOtp.trim(),
+                                                onSuccess = {
+                                                    authLogs = authLogs + "[Firebase] Sign in successful. Moving to profile setup."
+                                                    step = 3
+                                                },
+                                                onFailure = { ex ->
+                                                    errorMsg = "Incorrect code: ${ex.localizedMessage}"
+                                                    authLogs = authLogs + "[Firebase Error] Authentication credentials rejected: ${ex.localizedMessage}"
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                                3 -> {
+                                    if (name.isBlank() || passphrase.isBlank()) {
+                                        errorMsg = "Complete all identity attributes to initialize."
+                                    } else {
+                                        viewModel.registerUser(phoneNumber.trim(), name.trim(), passphrase)
+                                    }
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .testTag("onboarding_submit_button"),
+                        enabled = !isSendingOtp
+                    ) {
+                        Icon(
+                            imageVector = if (step == 3) Icons.Default.LockOpen else Icons.Default.ChevronRight,
+                            contentDescription = null
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = when (step) {
+                                1 -> "CONTINUE TO SMS OTP"
+                                2 -> "VERIFY OTP CODE"
+                                else -> "INITIALIZE ENCRYPTED ENGINE"
+                            },
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.scaled()
+                        )
+                    }
+
+                    if (localAccounts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        TextButton(
+                            onClick = { showRegistrationForm = false }
+                        ) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Back to Saved Profiles list", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Submissions Actions
-            Button(
-                onClick = {
-                    errorMsg = null
-                    when (step) {
-                        1 -> {
-                            val trimmedPhone = phoneNumber.trim()
-                            if (trimmedPhone.length < 7) {
-                                errorMsg = "Please enter a valid phone number."
-                                authLogs = authLogs + "[Validation] Invalid phone registration format rejected."
-                            } else {
-                                isSendingOtp = true
-                                if (isSimulatedMode) {
-                                    // Simulated flow with delays
-                                    authLogs = authLogs + "19:28:44 [LocalSimulator] Requesting recaptcha challenge..."
-                                    scope.launch {
-                                        kotlinx.coroutines.delay(800)
-                                        authLogs = authLogs + "19:28:45 [LocalSimulator] Recaptcha bypass resolved. Dispatching code..."
-                                        kotlinx.coroutines.delay(700)
-                                        authLogs = authLogs + "19:28:46 [LocalSimulator] SMS dispatched to: $trimmedPhone"
-                                        isSendingOtp = false
-                                        step = 2
-                                        countdownSeconds = 30
-                                        isTimerActive = true
-                                    }
-                                } else {
-                                    // Real Firebase setup
-                                    val activity = context as? Activity
-                                    if (activity != null) {
-                                        authLogs = authLogs + "[Firebase] Connection check: requesting SDK connection..."
-                                        FirebaseAuthManager.sendVerificationCode(
-                                            activity = activity,
-                                            phoneNumber = trimmedPhone,
-                                            onCodeSent = { verificationId, token ->
-                                                firebaseVerificationId = verificationId
-                                                resendToken = token
-                                                isSendingOtp = false
-                                                step = 2
-                                                countdownSeconds = 30
-                                                isTimerActive = true
-                                                authLogs = authLogs + "[Firebase] OnCodeSent verificationId: $verificationId"
-                                            },
-                                            onVerificationCompleted = { credential ->
-                                                enteredOtp = credential.smsCode ?: ""
-                                                isSendingOtp = false
-                                                authLogs = authLogs + "[Firebase] Verification Auto-completed successfully."
-                                            },
-                                            onVerificationFailed = { ex ->
-                                                isSendingOtp = false
-                                                errorMsg = "Firebase transmission error: ${ex.localizedMessage}. Reverting to high-integrity simulated engine..."
-                                                authLogs = authLogs + "[Firebase Error] ${ex.localizedMessage}"
-                                                // Fallback so user is not blocked
-                                                isSimulatedMode = true
-                                            }
-                                        )
-                                    } else {
-                                        isSendingOtp = false
-                                        errorMsg = "Failed to bind Firebase trigger to standard Android Activity context."
-                                    }
-                                }
-                            }
-                        }
-                        2 -> {
-                            if (isSimulatedMode) {
-                                if (enteredOtp.trim() != "123456") {
-                                    errorMsg = "Incorrect Verification OTP Code. Enter '123456' or tap notification to fill."
-                                    authLogs = authLogs + "[Validation] Wrong code input."
-                                } else {
-                                    authLogs = authLogs + "[LocalSimulator] Auth validation verified successfully."
-                                    step = 3
-                                }
-                            } else {
-                                if (enteredOtp.trim().length < 6) {
-                                    errorMsg = "Code must be 6 digits."
-                                } else {
-                                    authLogs = authLogs + "[Firebase] Submitting credential verification packet..."
-                                    FirebaseAuthManager.verifyCredential(
-                                        verificationId = firebaseVerificationId,
-                                        otpCode = enteredOtp.trim(),
-                                        onSuccess = {
-                                            authLogs = authLogs + "[Firebase] Sign in successful. Moving to profile setup."
-                                            step = 3
-                                        },
-                                        onFailure = { ex ->
-                                            errorMsg = "Incorrect code: ${ex.localizedMessage}"
-                                            authLogs = authLogs + "[Firebase Error] Authentication credentials rejected: ${ex.localizedMessage}"
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                        3 -> {
-                            if (name.isBlank() || passphrase.isBlank()) {
-                                errorMsg = "Complete all identity attributes to initialize."
-                            } else {
-                                viewModel.registerUser(phoneNumber.trim(), name.trim(), passphrase)
-                            }
-                        }
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("onboarding_submit_button"),
-                enabled = !isSendingOtp
-            ) {
-                Icon(
-                    imageVector = if (step == 3) Icons.Default.LockOpen else Icons.Default.ChevronRight,
-                    contentDescription = null
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = when (step) {
-                        1 -> "SEND SMS CODE"
-                        2 -> "VERIFY OTP CODE"
-                        else -> "INITIALIZE ENCRYPTED ENGINE"
-                    },
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.scaled()
-                )
             }
         }
     }
@@ -897,17 +1449,127 @@ fun OnboardingScreen(viewModel: SecureTextViewModel) {
  * DashboardScreen: Split into "Chats / Messages" and "Profile & Customize" sections.
  * Clean, flat, WhatsApp aesthetic.
  */
+data class UnifiedContact(
+    val phoneNumber: String,
+    val name: String,
+    val isGroup: Boolean,
+    val isAppUser: Boolean,
+    val statusHex: String,
+    val statusText: String,
+    val dbContactRef: Contact?
+)
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(viewModel: SecureTextViewModel, session: UserSession) {
     val contacts by viewModel.contacts.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val showCiphertext by viewModel.showCiphertextGlobal.collectAsState()
+    val localAccounts by viewModel.allLocalAccounts.collectAsState()
 
     var activeTab by remember { mutableStateOf(0) } // 0: Chats, 1: Profile & Customize
+    var serverCategory by remember { mutableStateOf("All") } // Discord-style: "All", "Direct", "Groups", "Bots"
 
+    var showProfileSwitcher by remember { mutableStateOf(false) }
     var showAddContactDialog by remember { mutableStateOf(false) }
     var showAddGroupDialog by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    var hasContactsPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasContactsPermission = isGranted
+        if (isGranted) {
+            Toast.makeText(context, "Frendo linked and synced with phone book successfully!", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "READ_CONTACTS permission denied. Using local memory storage only.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val deviceContacts = remember(hasContactsPermission) {
+        if (hasContactsPermission) {
+            getDeviceContacts(context)
+        } else {
+            emptyList()
+        }
+    }
+
+    val unifiedContacts = remember(contacts, deviceContacts, searchQuery) {
+        val appUserPhones = contacts.map { it.phoneNumber.replace(" ", "").replace("-", "").replace("+", "") }.toSet()
+        val mergedList = mutableListOf<UnifiedContact>()
+
+        // 1. Add DB contacts
+        contacts.forEach { dbContact ->
+            mergedList.add(
+                UnifiedContact(
+                    phoneNumber = dbContact.phoneNumber,
+                    name = dbContact.name,
+                    isGroup = dbContact.isGroup,
+                    isAppUser = true,
+                    statusHex = dbContact.avatarColorHex,
+                    statusText = dbContact.status,
+                    dbContactRef = dbContact
+                )
+            )
+        }
+
+        // 2. Add Device Contacts
+        deviceContacts.forEach { devContact ->
+            val cleanDevNum = devContact.phoneNumber.replace(" ", "").replace("-", "").replace("+", "")
+            if (cleanDevNum.isNotBlank()) {
+                val alreadyMerged = mergedList.any { 
+                    it.phoneNumber.replace(" ", "").replace("-", "").replace("+", "") == cleanDevNum 
+                }
+                if (!alreadyMerged) {
+                    val isUser = appUserPhones.contains(cleanDevNum)
+                    mergedList.add(
+                        UnifiedContact(
+                            phoneNumber = devContact.phoneNumber,
+                            name = devContact.name,
+                            isGroup = false,
+                            isAppUser = isUser,
+                            statusHex = devContact.avatarColorHex,
+                            statusText = if (isUser) "Hey there! I am using Frendo." else "Offline • Invite to Frendo",
+                            dbContactRef = if (isUser) contacts.firstOrNull { 
+                                it.phoneNumber.replace(" ", "").replace("-", "").replace("+", "") == cleanDevNum 
+                            } else null
+                        )
+                    )
+                }
+            }
+        }
+
+        val filtered = if (searchQuery.isNotBlank()) {
+            mergedList.filter {
+                it.name.contains(searchQuery, ignoreCase = true) ||
+                it.phoneNumber.contains(searchQuery, ignoreCase = true)
+            }
+        } else {
+            mergedList
+        }
+
+        // A-Z sorting, with app users & groups at top, like WhatsApp!
+        val appUsers = filtered.filter { it.isAppUser || it.isGroup }.sortedBy { it.name.lowercase() }
+        val nonUsers = filtered.filter { !it.isAppUser && !it.isGroup }.sortedBy { it.name.lowercase() }
+
+        appUsers + nonUsers
+    }
+
+    // Filter unifiedContacts according to our Discord-style category selection
+    val categoryContacts = remember(unifiedContacts, serverCategory) {
+        when (serverCategory) {
+            "Direct" -> unifiedContacts.filter { !it.isGroup && !it.phoneNumber.startsWith("bot_") }
+            "Groups" -> unifiedContacts.filter { it.isGroup }
+            "Bots" -> unifiedContacts.filter { it.phoneNumber.startsWith("bot_") }
+            else -> unifiedContacts
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -943,7 +1605,7 @@ fun DashboardScreen(viewModel: SecureTextViewModel, session: UserSession) {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // Small floating button for group creation
+                    // Small floating button for group creation (WhatsApp style FAB)
                     FloatingActionButton(
                         onClick = { showAddGroupDialog = true },
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
@@ -974,162 +1636,358 @@ fun DashboardScreen(viewModel: SecureTextViewModel, session: UserSession) {
         ) {
             when (activeTab) {
                 0 -> {
-                    // TAB 0: CHATS LIST
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        // Header / Title Row
-                        Row(
+                    // TAB 0: CHATS LIST (BLENDED CHAT FEED + DISCORD SIDEBAR)
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        
+                        // DISCORD-STYLE SIDEBAR RAIL:
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .width(72.dp)
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
+                                .padding(vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            Column {
-                                Text(
-                                    text = "Frendo Messages",
-                                    fontSize = 24.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.primary
+                            // 1. ALL CATEGORY CIRCLE
+                            val allSelected = serverCategory == "All"
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(if (allSelected) 12.dp else 24.dp))
+                                    .background(if (allSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { serverCategory = "All" },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Favorite,
+                                    contentDescription = "All Channels",
+                                    tint = if (allSelected) Color.White else MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
                                 )
+                            }
+
+                            // 2. DIRECT CHATS CIRCLE (Blurple)
+                            val directSelected = serverCategory == "Direct"
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(if (directSelected) 12.dp else 24.dp))
+                                    .background(if (directSelected) Color(0xFF5865F2) else MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { serverCategory = "Direct" },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = "Direct Chats",
+                                    tint = if (directSelected) Color.White else Color(0xFF5865F2),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+
+                            // 3. GROUP ROOMS CIRCLE (Teal/WhatsApp Green)
+                            val groupsSelected = serverCategory == "Groups"
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(if (groupsSelected) 12.dp else 24.dp))
+                                    .background(if (groupsSelected) Color(0xFF075E54) else MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { serverCategory = "Groups" },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Groups,
+                                    contentDescription = "Secure Channels",
+                                    tint = if (groupsSelected) Color.White else Color(0xFF075E54),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+
+                            // 4. BOTS CIRCLE (Gold)
+                            val botsSelected = serverCategory == "Bots"
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(if (botsSelected) 12.dp else 24.dp))
+                                    .background(if (botsSelected) Color(0xFFFEE75C) else MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { serverCategory = "Bots" },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Android,
+                                    contentDescription = "Security AI Bots",
+                                    tint = if (botsSelected) Color.DarkGray else Color(0xFFFBE11E),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            
+                            Spacer(modifier = Modifier.weight(1f))
+                            
+                            // Visual hint indicator for current category
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
                                 Text(
-                                    text = "Channel: ${session.phoneNumber}",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                                    text = serverCategory.substring(0, minOf(3, serverCategory.length)).uppercase(),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
-                            // Global toggle button for decryption/ciphertext
-                            Button(
-                                onClick = { viewModel.toggleShowCiphertext() },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (showCiphertext) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
-                                ),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 1.dp)
-                            ) {
-                                Text(
-                                    text = if (showCiphertext) "CIPHER ON" else "DECRYPT ON",
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = if (showCiphertext) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            }
                         }
 
-                        // Sandbox environment security card
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
+                        // MIDDLE CHATS FEED (WhatsApp + Telegram Style):
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .padding(start = 12.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
+                            
+                            // HEADER COMPONENT WITH TELEGRAM/WHATSAPP PROFILE DROPDOWN SWITCHER:
                             Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 10.dp)
+                                    .clickable { showProfileSwitcher = true }, // Tap header to switch accounts!
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.HealthAndSafety,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    // Circular Active Personal account icon with checkmark
+                                    val actColor = try {
+                                        Color(android.graphics.Color.parseColor(session.avatarColorHex))
+                                    } catch (e: Exception) {
+                                        MaterialTheme.colorScheme.primary
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(actColor),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(session.avatarEmoji, fontSize = 20.sp)
+                                    }
+                                    
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text(
+                                                text = session.name,
+                                                fontSize = 16.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                            Icon(
+                                                imageVector = Icons.Default.ArrowDropDown,
+                                                contentDescription = "Switch profile",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = "Line: ${session.phoneNumber}",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                    }
+                                }
+
+                                // Global Toggle button for Decryption live inspection
+                                Button(
+                                    onClick = { viewModel.toggleShowCiphertext() },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (showCiphertext) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 1.dp)
+                                ) {
                                     Text(
-                                        text = "E2EE AES Tunnel Fully Primed",
-                                        color = MaterialTheme.colorScheme.onBackground,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "Keys derived on-the-fly dynamically.",
-                                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                                        fontSize = 10.sp
+                                        text = if (showCiphertext) "CIPHER" else "DECRYPT",
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = if (showCiphertext) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
                             }
-                        }
 
-                        // Search box
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { viewModel.updateSearchQuery(it) },
-                            placeholder = { Text("Search chats or groups...", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)) },
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                            ),
-                            shape = RoundedCornerShape(14.dp),
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("dashboard_search_input")
-                        )
-
-                        Text(
-                            text = "ACTIVE CHANNELS (${contacts.size})",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-                        )
-
-                        if (contacts.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                                contentAlignment = Alignment.Center
+                            // E2EE tip bar
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier.padding(24.dp)
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.ChatBubbleOutline,
+                                        imageVector = Icons.Default.HealthAndSafety,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.outline,
-                                        modifier = Modifier.size(52.dp)
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
                                     )
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    Text(
-                                        text = "No private chats or groups yet",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                        textAlign = TextAlign.Center,
-                                        color = MaterialTheme.colorScheme.onBackground
-                                    )
-                                    Text(
-                                        text = "Create a new individual contact or secure group channel to begin encrypting.",
-                                        fontSize = 12.sp,
-                                        textAlign = TextAlign.Center,
-                                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                                        modifier = Modifier.padding(top = 4.dp)
-                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text(
+                                            text = "Encryption Tunnel Active",
+                                            color = MaterialTheme.colorScheme.onBackground,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "Direct peer keys are derived on-demand.",
+                                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                            fontSize = 9.sp
+                                        )
+                                    }
                                 }
                             }
-                        } else {
-                            LazyColumn(
+
+                            // Search Box
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { viewModel.updateSearchQuery(it) },
+                                placeholder = { Text("Search chats...", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                singleLine = true,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                items(contacts) { contact ->
-                                    ContactItemRow(
-                                        contact = contact,
-                                        onSelect = { viewModel.selectContact(contact) },
-                                        onDelete = { viewModel.deleteContact(contact) }
-                                    )
+                                    .testTag("dashboard_search_input")
+                            )
+
+                            if (!hasContactsPermission) {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.15f)),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f)),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Person,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.secondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Sync Phone Directory List",
+                                                color = MaterialTheme.colorScheme.onBackground,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                text = "Match local friends instantly.",
+                                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                                fontSize = 8.sp
+                                            )
+                                        }
+                                        Icon(
+                                            imageVector = Icons.Default.ChevronRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.secondary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            val activeTunnelsCount = categoryContacts.count { it.isAppUser || it.isGroup }
+                            Text(
+                                text = "CHANNELS (${activeTunnelsCount} active, ${categoryContacts.size - activeTunnelsCount} offline)",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                            )
+
+                            if (categoryContacts.isEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.padding(16.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ChatBubbleOutline,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+                                            modifier = Modifier.size(44.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = "Empty directory for: $serverCategory",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            textAlign = TextAlign.Center,
+                                            color = MaterialTheme.colorScheme.onBackground
+                                        )
+                                        Text(
+                                            text = "Add contacts or launch secure group chats to speak under AES tunnels.",
+                                            fontSize = 11.sp,
+                                            textAlign = TextAlign.Center,
+                                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    }
+                                }
+                            } else {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(categoryContacts) { uContact ->
+                                        val tempContact = uContact.dbContactRef ?: Contact(
+                                            phoneNumber = uContact.phoneNumber,
+                                            name = uContact.name,
+                                            status = uContact.statusText,
+                                            avatarColorHex = uContact.statusHex,
+                                            isGroup = uContact.isGroup
+                                        )
+                                        ContactItemRow(
+                                            contact = tempContact,
+                                            onSelect = {
+                                                if (uContact.dbContactRef != null) {
+                                                    viewModel.selectContact(uContact.dbContactRef)
+                                                } else {
+                                                    viewModel.selectOrAddContact(uContact.name, uContact.phoneNumber)
+                                                }
+                                            },
+                                            onDelete = if (uContact.dbContactRef != null && !tempContact.phoneNumber.startsWith("bot_")) {
+                                                { viewModel.deleteContact(uContact.dbContactRef) }
+                                            } else null
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1138,6 +1996,124 @@ fun DashboardScreen(viewModel: SecureTextViewModel, session: UserSession) {
                 1 -> {
                     // TAB 1: PROFILE & CUSTOMIZATION & ACCESSIBILITY
                     ProfileCustomizeSection(viewModel, session)
+                }
+            }
+        }
+    }
+
+    // MULTI-ACCOUNT DROPDOWN SWITCHER DIALOG (WhatsApp & Telegram design):
+    // Shows all pre-registered accounts, allows seamless tap-switching or adding new entries.
+    if (showProfileSwitcher) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { showProfileSwitcher = false }) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = "Switch Account (Multi-Profile Link)",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    
+                    Text(
+                        text = "Tap to switch sessions instantly. Your messages and tunnels are kept secure.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 240.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(localAccounts) { acc ->
+                                val isCurrent = acc.phoneNumber == session.phoneNumber
+                                val borderCol = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Transparent
+                                val scaleBg = try {
+                                    Color(android.graphics.Color.parseColor(acc.avatarColorHex))
+                                } catch (e: Exception) {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                                
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                    ),
+                                    border = BorderStroke(1.5.dp, borderCol),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.loginAsAccount(acc)
+                                            showProfileSwitcher = false
+                                            Toast.makeText(context, "Switched to ${acc.name} (${acc.phoneNumber})", Toast.LENGTH_SHORT).show()
+                                        }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .clip(CircleShape)
+                                                .background(scaleBg),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(acc.avatarEmoji, fontSize = 18.sp)
+                                        }
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(acc.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                            Text(acc.phoneNumber, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                        }
+                                        if (isCurrent) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = "Active",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                showProfileSwitcher = false
+                                viewModel.logout()
+                            }
+                        ) {
+                            Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Add Profile", fontWeight = FontWeight.Bold)
+                        }
+                        
+                        TextButton(onClick = { showProfileSwitcher = false }) {
+                            Text("Cancel")
+                        }
+                    }
                 }
             }
         }
@@ -1174,20 +2150,43 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
     var editName by remember { mutableStateOf(session.name) }
     var selectedColorHex by remember { mutableStateOf(session.avatarColorHex) }
     var selectedEmoji by remember { mutableStateOf(session.avatarEmoji) }
+    var editBio by remember { mutableStateOf(session.bio) }
+    var selectedPfpPath by remember { mutableStateOf(session.customPfpPath) }
 
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     val colorsPalette = listOf(PaletteAzure, PaletteEmerald, PaletteAmber, PaletteRose, PaletteOrchid)
     val emojisPalette = listOf("👤", "💬", "🍀", "🦁", "🐼", "🦊", "🚀", "⚡", "🐳", "🧁")
 
-    val wallpapers = listOf(
-        WallpaperWhite to "Fresh White",
-        WallpaperSand to "Soft Sand",
-        WallpaperMint to "Pastel Mint",
-        WallpaperSky to "Clear Sky",
-        WallpaperPeach to "Warm Peach",
-        WallpaperLilac to "Pale Lilac"
-    )
+    // Launcher for photo gallery picker with size limitation of 3MB
+    val pfpPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val inputStream = context.contentResolver.openInputStream(uri)
+                val sizeBytes = inputStream?.use { it.available() } ?: 0
+                val sizeMB = sizeBytes / (1024f * 1024f)
+                if (sizeMB > 3.0f) {
+                    Toast.makeText(context, "Image exceeds 3MB limit! Please select a smaller photo.", Toast.LENGTH_LONG).show()
+                } else {
+                    // Copy to private sandboxed app folder so storage permissions don't expire
+                    val file = java.io.File(context.filesDir, "pfp_${session.phoneNumber}.png")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        file.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    selectedPfpPath = file.absolutePath
+                    Toast.makeText(context, "Profile picture selected successfully!", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(context, "Failed to load image.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -1196,7 +2195,7 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // App settings header
+        // Settings Header
         Text(
             text = "Profile & Settings",
             fontSize = 24.sp,
@@ -1205,7 +2204,7 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
             modifier = Modifier.padding(top = 10.dp)
         )
 
-        // VISUAL PROFILE PANEL (AVATAR IS VISIBLE TO EVERYONE)
+        // VISUAL PROFILE PANEL
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
@@ -1226,29 +2225,42 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
                     modifier = Modifier.align(Alignment.Start)
                 )
 
-                // Large Avatar using user's customized choices
-                val activeBgColor = try {
-                    Color(android.graphics.Color.parseColor(selectedColorHex))
-                } catch (e: Exception) {
-                    MaterialTheme.colorScheme.primary
-                }
-
+                // Large Avatar with ProfileAvatar
                 Box(
                     modifier = Modifier
-                        .size(90.dp)
-                        .clip(CircleShape)
-                        .background(activeBgColor)
-                        .border(3.dp, MaterialTheme.colorScheme.surface, CircleShape),
+                        .size(100.dp)
+                        .clickable { pfpPickerLauncher.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                        .border(3.dp, MaterialTheme.colorScheme.primary, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = selectedEmoji,
-                        fontSize = 44.sp
+                    ProfileAvatar(
+                        customPfpPath = selectedPfpPath,
+                        avatarColorHex = selectedColorHex,
+                        avatarEmoji = selectedEmoji,
+                        size = 96.dp,
+                        emojiSize = 44.sp
                     )
+                    
+                    // Small click overlay camera badge for aesthetic excellence
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .background(MaterialTheme.colorScheme.primary, CircleShape)
+                            .align(Alignment.BottomEnd)
+                            .border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = "Change picture",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
                 }
 
                 Text(
-                    text = "This avatar and nickname is shared globally inside tunnels.",
+                    text = "Tap circle to upload your Profile Picture from Gallery (Under 3MB limit).",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                     textAlign = TextAlign.Center
@@ -1257,21 +2269,28 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
                 OutlinedTextField(
                     value = editName,
                     onValueChange = { editName = it },
-                    label = { Text("Public Nickname") },
+                    label = { Text("Display Name") },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("settings_nickname_input"),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
-                    )
+                        .testTag("settings_nickname_input")
+                )
+
+                OutlinedTextField(
+                    value = editBio,
+                    onValueChange = { editBio = it },
+                    label = { Text("Custom Bio (visible to others)") },
+                    singleLine = true,
+                    maxLines = 2,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_bio_input")
                 )
 
                 // Choose Background Color Circle Palettes
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Customize Avatar Background",
+                        text = "Customize Backup Avatar Background",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(bottom = 6.dp)
@@ -1301,7 +2320,7 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
                 // Choose public emoji icon
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Customize Avatar Emoji",
+                        text = "Customize Backup Avatar Emoji",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(bottom = 6.dp)
@@ -1356,7 +2375,14 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
 
                 Button(
                     onClick = {
-                        viewModel.updateUserProfile(editName.trim(), selectedColorHex, selectedEmoji)
+                        viewModel.updateUserProfile(
+                            name = editName.trim(),
+                            avatarColorHex = selectedColorHex,
+                            avatarEmoji = selectedEmoji,
+                            customPfpPath = selectedPfpPath,
+                            bio = editBio.trim()
+                        )
+                        Toast.makeText(context, "Profile details saved globally!", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.fillMaxWidth().testTag("save_profile_button"),
                     shape = RoundedCornerShape(12.dp)
@@ -1368,7 +2394,7 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
             }
         }
 
-        // DESIGN CUSTOMIZATION & ACCESSIBILITY OPTIONS (FONT SIZE, BRIGHT COLORS, DARK MODE)
+        // ACCESSIBILITY & THEMING (No Wallpaper customization, keep only dynamic font size scaling & Night mode switches!)
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
@@ -1380,14 +2406,13 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "ACCESSIBILITY & THEMING",
+                    text = "ACCESSIBILITY INTEGRATION",
                     color = MaterialTheme.colorScheme.primary,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace
                 )
 
-                // 1. Accessibility Size Adjuster
                 Column {
                     Row(
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1452,91 +2477,7 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
 
-                // 2. ONLY Bright Wallpaper Colors Picker
-                Column {
-                    Text(
-                        text = "Chat Bright Wallpaper",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        wallpapers.take(4).forEach { (hexCode, label) ->
-                            val isSelected = session.chatBgColorHex == hexCode
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(44.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(android.graphics.Color.parseColor(hexCode)))
-                                    .border(
-                                        width = if (isSelected) 3.dp else 1.dp,
-                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    )
-                                    .clickable {
-                                        viewModel.updateThemeCustomizations(
-                                            chatBgColorHex = hexCode,
-                                            fontSizeMultiplier = session.fontSizeMultiplier,
-                                            isDarkMode = session.isDarkMode
-                                        )
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = label.split(" ").last(),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.Black.copy(alpha = 0.6f)
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        wallpapers.drop(4).forEach { (hexCode, label) ->
-                            val isSelected = session.chatBgColorHex == hexCode
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(44.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(android.graphics.Color.parseColor(hexCode)))
-                                    .border(
-                                        width = if (isSelected) 3.dp else 1.dp,
-                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    )
-                                    .clickable {
-                                        viewModel.updateThemeCustomizations(
-                                            chatBgColorHex = hexCode,
-                                            fontSizeMultiplier = session.fontSizeMultiplier,
-                                            isDarkMode = session.isDarkMode
-                                        )
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = label.split(" ").last(),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.Black.copy(alpha = 0.6f)
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.weight(2f)) // blank balance
-                    }
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-
-                // 3. Dark Mode Toggle
+                // Night mode switch
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1544,66 +2485,41 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
                 ) {
                     Column {
                         Text(
-                            text = "Dark / Night Mode",
+                            text = "Night Mode Canvas",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Instantly toggle AMOLED-friendly visuals.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            text = "AMOLED eye-friendly dark colors",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                         )
                     }
                     Switch(
                         checked = session.isDarkMode,
-                        onCheckedChange = { active ->
+                        onCheckedChange = {
                             viewModel.updateThemeCustomizations(
                                 chatBgColorHex = session.chatBgColorHex,
                                 fontSizeMultiplier = session.fontSizeMultiplier,
-                                isDarkMode = active
+                                isDarkMode = it
                             )
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = MaterialTheme.colorScheme.primary
-                        )
+                        }
                     )
                 }
-            }
-        }
 
-        // LOGOUT ACTION
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.1f)),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.3f)),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { viewModel.logout() }
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.ExitToApp, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "Unregister Frendo Container",
-                            color = MaterialTheme.colorScheme.error,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Flush SQLite keys & memory data.",
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                            fontSize = 10.sp
-                        )
-                    }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                // Logout session
+                Button(
+                    onClick = { viewModel.logout() },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.ExitToApp, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("LOGOUT THIS PROFILE SESSION", fontWeight = FontWeight.Black, fontSize = 12.sp, color = Color.White)
                 }
-                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.error)
             }
         }
 
@@ -1618,7 +2534,7 @@ fun ProfileCustomizeSection(viewModel: SecureTextViewModel, session: UserSession
 fun ContactItemRow(
     contact: Contact,
     onSelect: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: (() -> Unit)? = null
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
@@ -1713,15 +2629,17 @@ fun ContactItemRow(
                 )
             }
 
-            IconButton(
-                onClick = onDelete,
-                modifier = Modifier.testTag("delete_contact_${contact.id}")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.DeleteSweep,
-                    contentDescription = "Remove Contact Node",
-                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f)
-                )
+            if (onDelete != null) {
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.testTag("delete_contact_${contact.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteSweep,
+                        contentDescription = "Remove Contact Node",
+                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f)
+                    )
+                }
             }
         }
     }
@@ -1981,8 +2899,8 @@ fun ChatScreen(viewModel: SecureTextViewModel, session: UserSession, contact: Co
                         message = message,
                         showCiphertext = showCiphertextGlobal,
                         session = session,
-                        senderPicColorHex = if (message.isUserSender) session.avatarColorHex else contact.avatarColorHex,
-                        senderPicEmoji = if (message.isUserSender) session.avatarEmoji else null,
+                        senderPicColorHex = if (message.senderPhone == session.phoneNumber) session.avatarColorHex else contact.avatarColorHex,
+                        senderPicEmoji = if (message.senderPhone == session.phoneNumber) session.avatarEmoji else null,
                         onInspectMessage = { selectedInspectMessage = message }
                     )
                 }
@@ -2037,6 +2955,7 @@ fun ChatScreen(viewModel: SecureTextViewModel, session: UserSession, contact: Co
     if (selectedInspectMessage != null) {
         CryptographicInspectDialog(
             message = selectedInspectMessage!!,
+            session = session,
             onDismiss = { selectedInspectMessage = null }
         )
     }
@@ -2061,7 +2980,7 @@ fun ChatBubbleItem(
         EncryptionUtils.decrypt(message.cipherText, message.ivString, message.passphraseUsed)
     }
 
-    val isUser = message.isUserSender
+    val isUser = message.senderPhone == session.phoneNumber
     val alignment = if (isUser) Alignment.End else Alignment.Start
 
     // Light-mode bright color scheme vs Dark mode colors
@@ -2251,6 +3170,7 @@ fun MessageDeliveryStatusIcon(status: String) {
 @Composable
 fun CryptographicInspectDialog(
     message: Message,
+    session: UserSession,
     onDismiss: () -> Unit
 ) {
     val formatter = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()) }
@@ -2301,7 +3221,7 @@ fun CryptographicInspectDialog(
                 MetricItem(label = "TIMESTAMP SIGNATURE", value = timeFormatted)
                 MetricItem(
                     label = "LINE DIRECTIVITY",
-                    value = if (message.isUserSender) "OUTGOING PORT" else "INCOMING PORT"
+                    value = if (message.senderPhone == session.phoneNumber) "OUTGOING PORT" else "INCOMING PORT"
                 )
                 MetricItem(label = "DELIVERY STATUS INDEX", value = message.deliveryStatus)
 
@@ -2351,4 +3271,36 @@ fun MetricItem(
 @Composable
 fun rememberScrollState(): androidx.compose.foundation.ScrollState {
     return androidx.compose.foundation.rememberScrollState()
+}
+
+fun getAppFingerprints(context: android.content.Context): Pair<String, String>? {
+    try {
+        val packageName = context.packageName
+        val packageManager = context.packageManager
+        val signatures = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            val packageInfo = packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+            packageInfo.signingInfo?.apkContentsSigners
+        } else {
+            @Suppress("DEPRECATION")
+            val packageInfo = packageManager.getPackageInfo(packageName, @Suppress("DEPRECATION") android.content.pm.PackageManager.GET_SIGNATURES)
+            @Suppress("DEPRECATION")
+            packageInfo.signatures
+        }
+        
+        if (signatures != null && signatures.isNotEmpty()) {
+            val signatureBytes = signatures[0].toByteArray()
+            val mdSha1 = java.security.MessageDigest.getInstance("SHA-1")
+            val mdSha256 = java.security.MessageDigest.getInstance("SHA-256")
+            
+            val sha1Digest = mdSha1.digest(signatureBytes)
+            val sha256Digest = mdSha256.digest(signatureBytes)
+            
+            val sha1 = sha1Digest.joinToString(":") { String.format("%02X", it) }
+            val sha256 = sha256Digest.joinToString(":") { String.format("%02X", it) }
+            return Pair(sha1, sha256)
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("FrendoSignature", "Error getting fingerprints", e)
+    }
+    return null
 }

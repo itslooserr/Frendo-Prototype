@@ -5,7 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [UserSession::class, Contact::class, Message::class], version = 2, exportSchema = false)
+@Database(entities = [UserSession::class, Contact::class, Message::class, LocalAccount::class], version = 3, exportSchema = false)
 abstract class SecureTextDatabase : RoomDatabase() {
 
     abstract fun secureTextDao(): SecureTextDao

@@ -20,6 +20,26 @@ interface SecureTextDao {
     suspend fun clearUserSession()
 
 
+    // --- Local Accounts Queries ---
+    @Query("SELECT * FROM local_accounts ORDER BY registeredAt DESC")
+    fun getAllLocalAccountsFlow(): Flow<List<LocalAccount>>
+
+    @Query("SELECT * FROM local_accounts WHERE phoneNumber = :phoneNumber LIMIT 1")
+    suspend fun getLocalAccount(phoneNumber: String): LocalAccount?
+
+    @Query("SELECT * FROM local_accounts")
+    suspend fun getAllLocalAccounts(): List<LocalAccount>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertLocalAccount(account: LocalAccount)
+
+    @Query("DELETE FROM local_accounts WHERE phoneNumber = :phoneNumber")
+    suspend fun deleteLocalAccount(phoneNumber: String)
+
+    @Query("DELETE FROM local_accounts")
+    suspend fun clearAllLocalAccounts()
+
+
     // --- Contact Queries ---
     @Query("SELECT * FROM contacts ORDER BY name ASC")
     fun getAllContactsFlow(): Flow<List<Contact>>

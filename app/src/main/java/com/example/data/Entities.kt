@@ -14,7 +14,24 @@ data class UserSession(
     val avatarEmoji: String = "👤",
     val chatBgColorHex: String = "#FDFCFF", // default clean minimal
     val fontSizeMultiplier: Float = 1.0f, // 0.8f (small), 1.0f (medium), 1.2f (large)
-    val isDarkMode: Boolean = false
+    val isDarkMode: Boolean = false,
+    val customPfpPath: String? = null,
+    val bio: String = "Hey there! I am using Frendo."
+)
+
+@Entity(tableName = "local_accounts")
+data class LocalAccount(
+    @PrimaryKey val phoneNumber: String,
+    val name: String,
+    val passphraseHex: String,
+    val registeredAt: Long = System.currentTimeMillis(),
+    val avatarColorHex: String = "#0061A4",
+    val avatarEmoji: String = "👤",
+    val customPfpPath: String? = null,
+    val bio: String = "Hey there! I am using Frendo.",
+    val isDarkMode: Boolean = false,
+    val chatBgColorHex: String = "#FDFCFF",
+    val fontSizeMultiplier: Float = 1.0f
 )
 
 @Entity(tableName = "contacts")
