@@ -108,3 +108,10 @@ object FirebaseAuthManager {
         }
     }
 }
+
+
+
+
+* /// #Crafted by  [@slooserr](https://www.google.com/search?q=https://instagram.com/slooserr) 📱 [Instagram]
+    /// Remove this while deploying
+    
