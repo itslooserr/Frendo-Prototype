@@ -20,3 +20,7 @@ class ExampleInstrumentedTest {
     assertEquals("com.example", appContext.packageName)
   }
 }
+
+
+
+/// *# Crafted by  [@slooserr](https://www.google.com/search?q=https://instagram.com/slooserr) 📱
